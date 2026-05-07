@@ -782,66 +782,117 @@ async function initInvoicesPage() {
 ═══════════════════════════════════════════════ */
 async function initFinancePage() {
   Sound.load();
-  const d=await Sheets.fetch(TABS.finance);
-  if (!d?.rows.length){ showNoData('pg-finance',TABS.finance,'No finance data'); return; }
-  const rows=d.rows;
-  const totalGranted=rows.reduce((s,r)=>s+(r['Loan Granted Amount']||0),0);
-  const totalOuts=rows.reduce((s,r)=>s+(r['Capital Outstanding']||0),0);
-  const totalMonthly=rows.reduce((s,r)=>s+(r['Monthly Installment']||0),0);
-  const repaidPct=totalGranted?(totalGranted-totalOuts)/totalGranted*100:0;
+  const d = await Sheets.fetch(TABS.finance);
+  if (!d?.rows.length) { showNoData('pg-finance', TABS.finance, 'No finance data'); return; }
+  const allRows = d.rows;
 
-  renderKPIs('fin-kpis',[
-    {icon:'🏦',label:'Total Loans Granted',value:'Rs. '+fmtLKRFull(totalGranted),  color:'blue'},
-    {icon:'💳',label:'Total Outstanding',  value:'Rs. '+fmtLKRFull(totalOuts),     color:'red'},
-    {icon:'📅',label:'Monthly Obligations',value:'Rs. '+fmtLKRFull(totalMonthly),  color:'amber'},
-    {icon:'✅',label:'Portfolio Repaid',    value:repaidPct.toFixed(1)+'%',         color:'green'}
-  ]);
-  setTableCount('fin-count',rows.length);
+  // ── Company slicer ──
+  // Sheet එකේ "Company" column එකෙන් companies ගන්නවා
+  // (column නම match නොවුනොත් "Company Name" හෝ ඔබේ sheet column නම දාන්න)
+  const companyCol = d.cols.find(c =>
+    c && (c.toLowerCase().includes('company') || c.toLowerCase().includes('entity'))
+  ) || null;
 
-  const barLabels=rows.map(r=>(r['Bank Name']||'—').replace('Sampath Bank-','Sampath ').replace('Seylan – ','Seylan ').replace('Seylan - ','Seylan '));
-  Charts.bar('fin-bar',barLabels,[{label:'Outstanding (LKR)',data:rows.map(r=>r['Capital Outstanding']||0)}],{horizontal:true,currency:true});
+  const compSel = document.getElementById('fin-company-sel');
+  if (compSel && companyCol) {
+    const companies = [...new Set(allRows.map(r => r[companyCol]).filter(Boolean))].sort();
+    compSel.innerHTML = '<option value="">All Companies</option>' +
+      companies.map(c => `<option value="${c}">${c}</option>`).join('');
+    compSel.onchange = function () {
+      Sound.click();
+      renderView(this.value ? allRows.filter(r => r[companyCol] === this.value) : allRows);
+    };
+  } else if (compSel) {
+    // Column auto-detect නොවුනොත් hardcode companies දාන්නම්
+    compSel.innerHTML = `
+      <option value="">All Companies</option>
+      <option value="Senaka Zenn">Senaka Zenn</option>
+      <option value="Senaka Builders">Senaka Builders</option>`;
+    compSel.onchange = function () {
+      Sound.click();
+      const val = this.value;
+      if (!val) { renderView(allRows); return; }
+      // company match — available column names check කරනවා
+      const matchCol = d.cols.find(c => c && c.toLowerCase().includes('company')) || null;
+      renderView(matchCol ? allRows.filter(r => r[matchCol] === val) : allRows);
+    };
+  }
 
-  const byBank={};
-  rows.forEach(r=>{ const b=r['Bank Name']||'Other'; byBank[b]=(byBank[b]||0)+(r['Capital Outstanding']||0); });
-  Charts.donut('fin-donut',Object.keys(byBank),Object.values(byBank),{currency:true});
+  function renderView(rows) {
+    const totalGranted  = rows.reduce((s, r) => s + (r['Loan Granted Amount']  || 0), 0);
+    const totalOuts     = rows.reduce((s, r) => s + (r['Capital Outstanding']  || 0), 0);
+    const totalMonthly  = rows.reduce((s, r) => s + (r['Monthly Installment']  || 0), 0);
+    const repaidPct     = totalGranted ? (totalGranted - totalOuts) / totalGranted * 100 : 0;
 
-  Charts.bar('fin-stacked',barLabels,[
-    {label:'Repaid',     data:rows.map(r=>Math.max(0,(r['Loan Granted Amount']||0)-(r['Capital Outstanding']||0))),colors:rows.map(()=>C.green+'aa')},
-    {label:'Outstanding',data:rows.map(r=>r['Capital Outstanding']||0),colors:rows.map(()=>C.red+'aa')}
-  ],{horizontal:true,currency:true,stacked:true});
+    renderKPIs('fin-kpis', [
+      { icon: '🏦', label: 'Total Loans Granted',  value: 'Rs. ' + fmtLKRFull(totalGranted), color: 'blue'  },
+      { icon: '💳', label: 'Total Outstanding',     value: 'Rs. ' + fmtLKRFull(totalOuts),    color: 'red'   },
+      { icon: '📅', label: 'Monthly Obligations',   value: 'Rs. ' + fmtLKRFull(totalMonthly), color: 'amber' },
+      { icon: '✅', label: 'Portfolio Repaid',       value: repaidPct.toFixed(1) + '%',         color: 'green' }
+    ]);
+    setTableCount('fin-count', rows.length);
 
-  const byType={};
-  rows.forEach(r=>{ const t=r['Loan Type']||'Other'; byType[t]=(byType[t]||0)+(r['Monthly Installment']||0); });
-  Charts.donut('fin-monthly',Object.keys(byType),Object.values(byType),{currency:true});
+    const abbrev = n => (n || '—')
+      .replace('Sampath Bank-', 'Sampath ')
+      .replace('Seylan – ', 'Seylan ')
+      .replace('Seylan - ', 'Seylan ');
 
-  rows._renderer=r=>{
-    const granted=r['Loan Granted Amount']||0, outs=r['Capital Outstanding']||0;
-    const pct=granted?Math.round((granted-outs)/granted*100):0;
-    const ltype=r['Loan Type']||'—';
-    const sCls=ltype.toLowerCase().includes('leas')?'purple':ltype.toLowerCase().includes('agro')?'green':'blue';
-    return `<tr>
-      <td><button class="expand-btn">▶</button></td>
-      <td>${r['Bank Name']||'—'}</td>
-      <td style="font-size:.7rem;font-variant-numeric:tabular-nums">${r['Loan Account No']||'—'}</td>
-      <td>${statusBadge(ltype,sCls)}</td>
-      <td class="num">Rs. ${fmtLKR(granted)}</td>
-      <td class="num text-red">Rs. ${fmtLKR(outs)}</td>
-      <td class="num text-muted">${(r['Age Days']||0).toLocaleString()}d</td>
-      <td>${progressBar(pct)}</td>
-    </tr><tr class="expand-row" style="display:none"><td colspan="8">
-      <div class="expand-content">
-        <div class="expand-field"><div class="expand-field-label">Granted Date</div><div class="expand-field-val">${fmtDate(r['Granted Date'])}</div></div>
-        <div class="expand-field"><div class="expand-field-label">Monthly Instalment</div><div class="expand-field-val">Rs. ${fmtLKR(r['Monthly Installment']||0)}</div></div>
-        <div class="expand-field"><div class="expand-field-label">% Repaid</div><div class="expand-field-val">${pct}%</div></div>
-        <div class="expand-field"><div class="expand-field-label">Balance</div><div class="expand-field-val">Rs. ${fmtLKR(outs,true)}</div></div>
-      </div>
-    </td></tr>`;
-  };
-  renderRowsInto(document.getElementById('fin-tbody'),rows,rows._renderer);
-  makeTableSortable('fin-tbl','fin-search',rows);
+    const barLabels = rows.map(r => abbrev(r['Bank Name']));
+
+    Charts.bar('fin-bar', barLabels,
+      [{ label: 'Outstanding (LKR)', data: rows.map(r => r['Capital Outstanding'] || 0) }],
+      { horizontal: true, currency: true });
+
+    const byBank = {};
+    rows.forEach(r => {
+      const b = r['Bank Name'] || 'Other';
+      byBank[b] = (byBank[b] || 0) + (r['Capital Outstanding'] || 0);
+    });
+    Charts.donut('fin-donut', Object.keys(byBank), Object.values(byBank), { currency: true });
+
+    Charts.bar('fin-stacked', barLabels, [
+      { label: 'Repaid',      data: rows.map(r => Math.max(0, (r['Loan Granted Amount'] || 0) - (r['Capital Outstanding'] || 0))), colors: rows.map(() => C.green + 'aa') },
+      { label: 'Outstanding', data: rows.map(r => r['Capital Outstanding'] || 0), colors: rows.map(() => C.red + 'aa') }
+    ], { horizontal: true, currency: true, stacked: true });
+
+    const byType = {};
+    rows.forEach(r => {
+      const t = r['Loan Type'] || 'Other';
+      byType[t] = (byType[t] || 0) + (r['Monthly Installment'] || 0);
+    });
+    Charts.donut('fin-monthly', Object.keys(byType), Object.values(byType), { currency: true });
+
+    rows._renderer = r => {
+      const granted = r['Loan Granted Amount'] || 0, outs = r['Capital Outstanding'] || 0;
+      const pct = granted ? Math.round((granted - outs) / granted * 100) : 0;
+      const ltype = r['Loan Type'] || '—';
+      const sCls = ltype.toLowerCase().includes('leas') ? 'purple'
+                 : ltype.toLowerCase().includes('agro') ? 'green' : 'blue';
+      return `<tr>
+        <td><button class="expand-btn">▶</button></td>
+        <td>${r['Bank Name'] || '—'}</td>
+        <td style="font-size:.7rem;font-variant-numeric:tabular-nums">${r['Loan Account No'] || '—'}</td>
+        <td>${statusBadge(ltype, sCls)}</td>
+        <td class="num">Rs. ${fmtLKR(granted)}</td>
+        <td class="num text-red">Rs. ${fmtLKR(outs)}</td>
+        <td class="num text-muted">${(r['Age Days'] || 0).toLocaleString()}d</td>
+        <td>${progressBar(pct)}</td>
+      </tr><tr class="expand-row" style="display:none"><td colspan="8">
+        <div class="expand-content">
+          <div class="expand-field"><div class="expand-field-label">Granted Date</div><div class="expand-field-val">${fmtDate(r['Granted Date'])}</div></div>
+          <div class="expand-field"><div class="expand-field-label">Monthly Instalment</div><div class="expand-field-val">Rs. ${fmtLKR(r['Monthly Installment'] || 0)}</div></div>
+          <div class="expand-field"><div class="expand-field-label">% Repaid</div><div class="expand-field-val">${pct}%</div></div>
+          <div class="expand-field"><div class="expand-field-label">Balance</div><div class="expand-field-val">Rs. ${fmtLKR(outs, true)}</div></div>
+        </div>
+      </td></tr>`;
+    };
+    renderRowsInto(document.getElementById('fin-tbody'), rows, rows._renderer);
+    makeTableSortable('fin-tbl', 'fin-search', rows);
+  }
+
+  renderView(allRows);
   Sound.success();
 }
-
 /* ═══════════════════════════════════════════════
    PAGE 5 — TENDER / PRODUCTION
 ═══════════════════════════════════════════════ */
